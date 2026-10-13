@@ -1,0 +1,4 @@
+{
+  "description": "The 3dgs-view hooks module: /splat, the preview pane and the offer band",
+  "modules": ["./register.tsx"]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "claude-3dgs-view",
+  "owner": {
+    "name": "Niccolò Parodi",
+    "url": "https://github.com/parodiniccolo"
+  },
+  "plugins": [
+    {
+      "name": "3dgs-view",
+      "source": "./",
+      "description": "Preview 3D Gaussian splats in a Claude Code pane: orbit with the mouse, rendered by Spark in headless Chrome",
+      "category": "productivity",
+      "tags": ["gaussian-splatting", "3dgs", "splat", "preview", "3d", "mod", "terminal"]
+    }
+  ],
+  "metadata": {
+    "description": "Preview 3D Gaussian splats inside Claude Code"
+  }
+}

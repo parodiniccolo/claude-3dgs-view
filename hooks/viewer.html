@@ -1,0 +1,138 @@
+<!doctype html><html><head><meta charset="utf-8"><title>splat</title>
+<style>html,body{margin:0;height:100%;background:#111;overflow:hidden}canvas{display:block}
+#keys{position:fixed;left:0;right:0;bottom:0;padding:8px 14px;font:13px/1.6 ui-monospace,Menlo,monospace;color:#bbb;background:#111c;display:flex;flex-wrap:wrap;gap:4px 22px}
+#keys b{color:#d97757;font-weight:600}#keys .readout{color:#888;flex-basis:100%}</style>
+<script type="importmap">{"imports":{
+ "three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+ "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+ "@sparkjsdev/spark":"https://sparkjs.dev/releases/spark/2.3.1/spark.module.js"}}</script>
+<script>
+const log = m => fetch("/log", { method: "POST", body: String(m) });
+addEventListener("error", e => log("ERR " + e.message));
+addEventListener("unhandledrejection", e => log("REJ " + (e.reason?.message || e.reason)));
+</script>
+</head><body><script type="module">
+import * as THREE from "three";
+import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
+const q = new URLSearchParams(location.search);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 1000);
+const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: q.has("shot") });
+renderer.setSize(innerWidth, innerHeight); document.body.appendChild(renderer.domElement);
+scene.add(new SparkRenderer({ renderer }));
+const splat = new SplatMesh({ url: "/splat", fileType: q.get("ext") || undefined });
+splat.quaternion.set(1, 0, 0, 0); // ponytail: most splats are y-down; flip once
+scene.add(splat);
+await splat.initialized;
+splat.updateMatrixWorld();
+// ponytail: floaters stretch the true bounding box, so frame the 5th-95th percentile of a sample of centers instead
+const xs = [], ys = [], zs = [], step = Math.max(1, Math.floor(splat.numSplats / 100000)), tmp = new THREE.Vector3();
+splat.forEachSplat((i, center) => { if (i % step === 0) { tmp.copy(center).applyMatrix4(splat.matrixWorld); xs.push(tmp.x); ys.push(tmp.y); zs.push(tmp.z); } });
+const pct = (a, p) => { a.sort((u, v) => u - v); return a[Math.floor((a.length - 1) * p)]; };
+const lo = new THREE.Vector3(pct(xs, 0.05), pct(ys, 0.05), pct(zs, 0.05)), hi = new THREE.Vector3(pct(xs, 0.95), pct(ys, 0.95), pct(zs, 0.95));
+const c = lo.clone().add(hi).multiplyScalar(0.5);
+const r = Math.max(hi.clone().sub(lo).length() / 2, 0.1);
+// orbit: circle the camera-space pan point at distance d. look: stand at the world offset (px, py, pz) from the center and face along -dir.
+const place = (az, el, d, px, py, pz, look) => {
+  az *= Math.PI / 180; el *= Math.PI / 180;
+  const dir = new THREE.Vector3(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az));
+  const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), dir).normalize(); // camera looks along -dir
+  const up = new THREE.Vector3().crossVectors(dir, right).normalize();
+  const target = c.clone().addScaledVector(right, px * r).addScaledVector(up, py * r); // pan in camera space
+  if (look) { camera.position.copy(c).add(new THREE.Vector3(px, py, pz).multiplyScalar(r)); camera.lookAt(camera.position.clone().sub(dir)); }
+  else { camera.position.copy(target).addScaledVector(dir, d * r); camera.lookAt(target); }
+};
+let frame = { w: innerWidth, h: innerHeight }; // the headless frame's size: 960 wide, as tall as the pane's aspect wants
+let cam;
+const view = n => {
+  if (n.has("ar")) { const ar = Number(n.get("ar")) || 1.6; frame = { w: 960, h: Math.round(960 / ar) }; camera.aspect = ar; camera.updateProjectionMatrix(); }
+  cam = { az: Number(n.get("az")) || 0, el: n.has("el") ? Number(n.get("el")) : 20, d: Number(n.get("d")) || 1.6, px: Number(n.get("px")) || 0, py: Number(n.get("py")) || 0, pz: Number(n.get("pz")) || 0, look: n.has("look") };
+  place(cam.az, cam.el, cam.d, cam.px, cam.py, cam.pz, cam.look); };
+view(q);
+log("N " + splat.numSplats);
+renderer.setAnimationLoop(() => renderer.render(scene, camera));
+// Interactive mode: the same keys and drags as the terminal pane. The math mirrors walk/dragTo in pad.tsx and the
+// keys in register.tsx; a terminal cell is about 8x16 px, so per-pixel rates are the per-cell ones over that.
+if (!q.has("shot")) {
+  const clampEl = e => Math.max(-85, Math.min(85, Math.round(e)));
+  const round = n => +n.toFixed(3) || 0;
+  const walk = (forward, right) => {
+    const a = cam.az * Math.PI / 180;
+    cam.px = round(cam.px - forward * Math.sin(a) + right * Math.cos(a)); cam.pz = round(cam.pz - forward * Math.cos(a) - right * Math.sin(a));
+  };
+  const keys = () => {
+    const t = cam.look ? 1 : -1;
+    return [
+      ["a", cam.look ? "◀ turn" : "◀ orbit", () => cam.az += 20 * t],
+      ["d", cam.look ? "turn ▶" : "orbit ▶", () => cam.az -= 20 * t],
+      ["q", cam.look ? "▲ look up" : "▲ up", () => cam.el = clampEl(cam.el - 15 * t)],
+      ["e", cam.look ? "▼ look down" : "▼ down", () => cam.el = clampEl(cam.el + 15 * t)],
+      ["w", cam.look ? "forward" : "zoom in", () => cam.look ? walk(0.08, 0) : cam.d = Math.max(0.1, cam.d * 0.7)],
+      ["s", cam.look ? "back" : "zoom out", () => cam.look ? walk(-0.08, 0) : cam.d = Math.min(4, cam.d / 0.7)],
+      ["m", cam.look ? "mode: look around" : "mode: orbit", () => Object.assign(cam, { look: !cam.look, d: 1, px: 0, py: 0, pz: 0 })],
+      ["r", "reset", () => Object.assign(cam, { az: 30, el: 20, d: 1, px: 0, py: 0, pz: 0 })],
+    ];
+  };
+  const bar = document.createElement("div"); bar.id = "keys"; document.body.appendChild(bar);
+  const apply = () => {
+    place(cam.az, cam.el, cam.d, cam.px, cam.py, cam.pz, cam.look);
+    const readout = `${cam.look ? "look around" : "orbit"} · az ${cam.az}° · el ${cam.el}°${cam.look ? "" : ` · dist ${cam.d.toFixed(2)}`} — ${cam.look ? "drag looks · right-drag slides · wheel walks" : "drag orbits · right-drag pans · wheel zooms"}`;
+    bar.innerHTML = `<span class="readout"></span>` + keys().map(([k, label]) => `<span><b>${k}</b>: ${label}</span>`).join("");
+    bar.firstChild.textContent = readout;
+  };
+  apply();
+  addEventListener("keydown", e => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const hit = keys().find(([k]) => k === e.key.toLowerCase());
+    if (hit) { hit[2](); apply(); }
+  });
+  const canvas = renderer.domElement;
+  canvas.addEventListener("contextmenu", e => e.preventDefault());
+  let drag;
+  canvas.addEventListener("pointerdown", e => { drag = { x: e.clientX, y: e.clientY, button: e.button, from: { ...cam } }; canvas.setPointerCapture(e.pointerId); });
+  canvas.addEventListener("pointerup", () => drag = undefined);
+  canvas.addEventListener("pointermove", e => {
+    if (!drag) return;
+    const dx = (e.clientX - drag.x) / 8, dy = (e.clientY - drag.y) / 16; // in terminal cells
+    Object.assign(cam, drag.from);
+    if (drag.button === 0) { const s = cam.look ? -1 : 1; cam.az = Math.round(cam.az - s * dx * 1.5); cam.el = clampEl(cam.el + s * dy * 3); }
+    else if (cam.look) { walk(0, -dx * 0.01); cam.py = round(cam.py + dy * 0.02); }
+    else { cam.px = round(cam.px - dx * 0.01); cam.py = round(cam.py + dy * 0.02); }
+    apply();
+  });
+  canvas.addEventListener("wheel", e => {
+    e.preventDefault();
+    const by = e.deltaY / 16; // rows, as the pane's ui.scroll counts them
+    if (cam.look) walk(-0.02 * by, 0); else cam.d = Math.min(4, Math.max(0.1, cam.d * Math.pow(1.03, by)));
+    apply();
+  }, { passive: false });
+}
+addEventListener("resize", () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+// ponytail: headless mode: post a frame, then long-poll /next for the next view and repeat; the page stays loaded.
+// Each view gets a quick low-res frame, then a full one once the sort worker has settled (1.5 s was enough for 2.8M splats).
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const shoot = ratio => new Promise(done => {
+  renderer.setPixelRatio(ratio); renderer.setSize(frame.w, frame.h); renderer.render(scene, camera);
+  renderer.domElement.toBlob(b => fetch("/shot", { method: "POST", body: b }).then(done));
+});
+let serial = 0;
+const show = async fast => {
+  const mine = ++serial;
+  if (fast) { await sleep(40); if (mine === serial) await shoot(0.25); return; } // ponytail: dragging: tiny frames, stale sort accepted
+  await sleep(200); if (mine !== serial) return;
+  await shoot(0.4);
+  await sleep(1300); if (mine !== serial) return;
+  await shoot(1);
+};
+if (q.has("shot")) (async () => {
+  show(false);
+  for (;;) {
+    const r = await fetch("/next").catch(() => null);
+    if (!r) { await sleep(1000); if (!(await fetch("/next").catch(() => null))) { window.close(); return; } } // ponytail: server gone, so the page closes itself
+    if (r?.status !== 200) continue;
+    const n = new URLSearchParams(await r.text());
+    view(n);
+    show(n.has("fast"));
+  }
+})();
+</script></body></html>
